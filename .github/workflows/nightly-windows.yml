@@ -1,0 +1,232 @@
+name: Nightly Windows
+
+on:
+  schedule:
+    - cron: "30 1 * * *" # Every day at 01:30 UTC
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/nightly-windows.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync fork main with upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 📦 Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: 🔄 Rebase fork main onto upstream/main
+        env:
+          PATCH_FILE: .github/workflows/nightly-windows.yml
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "::error::Expected $PATCH_FILE on fork main but it is missing."
+            exit 1
+          fi
+          cp "$PATCH_FILE" /tmp/patch-file
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/mxpv/podsync.git
+          git fetch upstream main
+
+          original_tree="$(git rev-parse HEAD^{tree})"
+
+          git reset --hard upstream/main
+          mkdir -p "$(dirname "$PATCH_FILE")"
+          cp /tmp/patch-file "$PATCH_FILE"
+          git add "$PATCH_FILE"
+
+          if git diff --cached --quiet; then
+            echo "::warning::$PATCH_FILE already present in upstream — skipping patch commit."
+          else
+            git commit -m "ci: add nightly Windows build workflow"
+          fi
+
+          new_tree="$(git rev-parse HEAD^{tree})"
+
+          if [ "$original_tree" = "$new_tree" ]; then
+            echo "::notice::Fork main already in sync with upstream + patch."
+            exit 0
+          fi
+
+          # GITHUB_TOKEN pushes do not trigger downstream workflows, so this won't
+          # recursively re-fire nightly-windows.yml.
+          git push --force origin HEAD:main
+          echo "::notice::Fork main fast-forwarded to upstream/main with patch reapplied."
+
+  check:
+    name: Check upstream
+    needs: sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.check.outputs.version }}
+      commit: ${{ steps.check.outputs.commit }}
+
+    steps:
+      - name: 📦 Checkout upstream main
+        uses: actions/checkout@v6
+        with:
+          repository: mxpv/podsync
+          ref: main
+          fetch-depth: 1
+
+      - name: 🔍 Compare upstream HEAD with previous nightly
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(date -u +%Y-%m-%d)"
+          commit="$(git rev-parse HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+          prev_tag="$(gh release list --repo "$GITHUB_REPOSITORY" \
+              --json tagName,createdAt \
+              --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+
+          if [ -z "$prev_tag" ]; then
+            echo "::notice::No prior nightly release — will build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          prev_commit="$(gh release view "$prev_tag" --repo "$GITHUB_REPOSITORY" \
+              --json body --jq '.body' \
+              | grep -oE 'commit: [0-9a-f]{40}' | awk '{print $2}' || true)"
+
+          if [ "$prev_commit" = "$commit" ]; then
+            echo "::notice::Upstream HEAD ${commit:0:7} already shipped in ${prev_tag}; skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Upstream HEAD ${commit:0:7} differs from ${prev_tag} (${prev_commit:0:7}); will build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build windows/${{ matrix.goarch }}
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            asset_arch: x86_64
+          - goarch: arm64
+            asset_arch: arm64
+
+    steps:
+      - name: 📦 Checkout upstream main
+        uses: actions/checkout@v6
+        with:
+          repository: mxpv/podsync
+          ref: main
+          fetch-depth: 0
+
+      - name: 🐹 Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.25
+
+      - name: 🏗️ Build via Makefile (cross-compile)
+        env:
+          GOOS: windows
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          TAG: nightly-${{ needs.check.outputs.version }}
+        run: |
+          make build
+          mkdir -p dist
+          mv bin/podsync dist/podsync.exe
+
+      - name: 📦 Package zip
+        id: pkg
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+          ZIP="Podsync_${VERSION}_Windows_${ASSET_ARCH}.zip"
+          (cd dist && zip "../${ZIP}" podsync.exe)
+          sha256sum "${ZIP}" | awk '{print $1}' > "${ZIP}.sha256"
+          echo "zip=${ZIP}" >> "$GITHUB_OUTPUT"
+
+      - name: ⬆️ Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: podsync-windows-${{ matrix.asset_arch }}
+          path: |
+            ${{ steps.pkg.outputs.zip }}
+            ${{ steps.pkg.outputs.zip }}.sha256
+
+  release:
+    name: Publish nightly release
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: ⬇️ Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          pattern: podsync-windows-*
+          merge-multiple: true
+
+      - name: 🚀 Create nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          set -euo pipefail
+          TAG="nightly-${VERSION}"
+
+          ASSETS=(
+            "artifacts/Podsync_${VERSION}_Windows_x86_64.zip"
+            "artifacts/Podsync_${VERSION}_Windows_x86_64.zip.sha256"
+            "artifacts/Podsync_${VERSION}_Windows_arm64.zip"
+            "artifacts/Podsync_${VERSION}_Windows_arm64.zip.sha256"
+          )
+
+          for f in "${ASSETS[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing expected asset: $f"
+              exit 1
+            fi
+          done
+
+          # If a release for today already exists (re-run on the same date with a new
+          # upstream commit), replace it so assets and recorded commit SHA stay in sync.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Nightly ${VERSION}" \
+            --prerelease \
+            --notes "Nightly build of upstream \`mxpv/podsync@main\`.
+
+          commit: ${COMMIT}" \
+            "${ASSETS[@]}"

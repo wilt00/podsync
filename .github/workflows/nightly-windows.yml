@@ -24,17 +24,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: 🔄 Rebase fork main onto upstream/main
+      - name: 🔄 Sync fork main with upstream/main
         env:
-          PATCH_FILE: .github/workflows/nightly-windows.yml
+          WORKFLOW_DIR: .github/workflows
         run: |
           set -euo pipefail
 
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::Expected $PATCH_FILE on fork main but it is missing."
+          if [ ! -d "$WORKFLOW_DIR" ]; then
+            echo "::error::Expected $WORKFLOW_DIR on fork main but it is missing."
             exit 1
           fi
-          cp "$PATCH_FILE" /tmp/patch-file
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -42,30 +41,22 @@ jobs:
           git remote add upstream https://github.com/mxpv/podsync.git
           git fetch upstream main
 
-          original_tree="$(git rev-parse HEAD^{tree})"
-
-          git reset --hard upstream/main
-          mkdir -p "$(dirname "$PATCH_FILE")"
-          cp /tmp/patch-file "$PATCH_FILE"
-          git add "$PATCH_FILE"
+          fork_head="$(git rev-parse HEAD)"
+          git read-tree --reset -u upstream/main
+          git restore --source="$fork_head" --staged --worktree -- "$WORKFLOW_DIR"
+          git add --all
 
           if git diff --cached --quiet; then
-            echo "::warning::$PATCH_FILE already present in upstream — skipping patch commit."
-          else
-            git commit -m "ci: add nightly Windows build workflow"
-          fi
-
-          new_tree="$(git rev-parse HEAD^{tree})"
-
-          if [ "$original_tree" = "$new_tree" ]; then
-            echo "::notice::Fork main already in sync with upstream + patch."
+            echo "::notice::Fork main already matches upstream outside $WORKFLOW_DIR."
             exit 0
           fi
 
+          git commit -m "ci: sync fork main with upstream"
+
           # GITHUB_TOKEN pushes do not trigger downstream workflows, so this won't
           # recursively re-fire nightly-windows.yml.
-          git push --force origin HEAD:main
-          echo "::notice::Fork main fast-forwarded to upstream/main with patch reapplied."
+          git push origin HEAD:main
+          echo "::notice::Fork main synced with upstream while preserving $WORKFLOW_DIR."
 
   check:
     name: Check upstream

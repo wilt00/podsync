@@ -13,69 +13,46 @@ permissions:
 
 jobs:
   sync:
-    name: Sync fork main with upstream
+    name: Sync fork branches with upstream
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.sync.outputs.commit }}
 
     steps:
-      - name: 📦 Checkout fork main
+      - name: 📦 Checkout windows-main
         uses: actions/checkout@v6
         with:
+          ref: windows-main
           fetch-depth: 0
           persist-credentials: true
 
-      - name: 🔄 Rebase fork main onto upstream/main
-        env:
-          PATCH_FILE: .github/workflows/nightly-windows.yml
-          WORKFLOW_DIR: .github/workflows
+      - name: 🔄 Mirror upstream main and update windows-main
+        id: sync
         run: |
           set -euo pipefail
 
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::Expected $PATCH_FILE on fork main but it is missing."
-            exit 1
-          fi
-          cp "$PATCH_FILE" /tmp/patch-file
-
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git remote add upstream https://github.com/mxpv/podsync.git
           git fetch upstream main
 
-          merge_base="$(git merge-base HEAD upstream/main)"
-          if ! git diff --quiet "$merge_base..upstream/main" -- "$WORKFLOW_DIR"; then
-            echo "::error::Upstream changed $WORKFLOW_DIR; sync main manually so upstream commit history is preserved."
-            exit 1
-          fi
+          # The fork's main branch always exactly tracks upstream main.
+          git push --force origin upstream/main:refs/heads/main
 
-          original_tree="$(git rev-parse HEAD^{tree})"
+          # Feature branch tips remain stable. windows-main receives upstream
+          # changes through merges and remains the source for Windows releases.
+          git checkout -B windows-main origin/windows-main
+          git merge --no-edit upstream/main
+          git push origin windows-main
 
-          git reset --hard upstream/main
-          mkdir -p "$(dirname "$PATCH_FILE")"
-          cp /tmp/patch-file "$PATCH_FILE"
-          git add "$PATCH_FILE"
-
-          if git diff --cached --quiet; then
-            echo "::warning::$PATCH_FILE already present in upstream — skipping patch commit."
-          else
-            git commit -m "ci: add nightly Windows build workflow"
-          fi
-
-          new_tree="$(git rev-parse HEAD^{tree})"
-
-          if [ "$original_tree" = "$new_tree" ]; then
-            echo "::notice::Fork main already in sync with upstream + patch."
-            exit 0
-          fi
-
-          # GITHUB_TOKEN pushes do not trigger downstream workflows, so this won't
-          # recursively re-fire nightly-windows.yml.
-          git push --force origin HEAD:main
-          echo "::notice::Fork main rebased onto upstream/main with patch reapplied."
+          commit="$(git rev-parse HEAD)"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "::notice::windows-main is ready at ${commit}."
 
   check:
-    name: Check upstream
+    name: Check windows-main
     needs: sync
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -85,14 +62,13 @@ jobs:
       commit: ${{ steps.check.outputs.commit }}
 
     steps:
-      - name: 📦 Checkout upstream main
+      - name: 📦 Checkout windows-main
         uses: actions/checkout@v6
         with:
-          repository: mxpv/podsync
-          ref: main
+          ref: ${{ needs.sync.outputs.commit }}
           fetch-depth: 1
 
-      - name: 🔍 Compare upstream HEAD with previous nightly
+      - name: 🔍 Compare windows-main HEAD with previous nightly
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,10 +94,10 @@ jobs:
               | grep -oE 'commit: [0-9a-f]{40}' | awk '{print $2}' || true)"
 
           if [ "$prev_commit" = "$commit" ]; then
-            echo "::notice::Upstream HEAD ${commit:0:7} already shipped in ${prev_tag}; skipping."
+            echo "::notice::windows-main HEAD ${commit:0:7} already shipped in ${prev_tag}; skipping."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Upstream HEAD ${commit:0:7} differs from ${prev_tag} (${prev_commit:0:7}); will build."
+            echo "::notice::windows-main HEAD ${commit:0:7} differs from ${prev_tag} (${prev_commit:0:7}); will build."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -142,11 +118,10 @@ jobs:
             asset_arch: arm64
 
     steps:
-      - name: 📦 Checkout upstream main
+      - name: 📦 Checkout windows-main
         uses: actions/checkout@v6
         with:
-          repository: mxpv/podsync
-          ref: main
+          ref: ${{ needs.check.outputs.commit }}
           fetch-depth: 0
 
       - name: 🐹 Set up Go
@@ -231,9 +206,10 @@ jobs:
 
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$COMMIT" \
             --title "Nightly ${VERSION}" \
             --prerelease \
-            --notes "Nightly build of upstream \`mxpv/podsync@main\`.
+            --notes "Nightly build of \`wilt00/podsync@windows-main\`.
 
           commit: ${COMMIT}" \
             "${ASSETS[@]}"

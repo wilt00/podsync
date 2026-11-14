@@ -102,7 +102,8 @@ func fakePatreonAPI(t *testing.T) (*httptest.Server, *url.Values) {
 		_, _ = w.Write([]byte(`{"data":[
 			{"id":"174464677","type":"post","attributes":{"title":"AMT423 bonus bits","post_type":"audio_file",
 			 "published_at":"2026-11-01T10:00:00.000+00:00","current_user_can_view":true,
-			 "url":"https://www.patreon.com/posts/amt423-174464677","content":"<p>Bits</p>","post_file":{"duration":360.0}}},
+			 "url":"https://www.patreon.com/posts/amt423-174464677","content":null,"post_file":{"duration":360.0},
+			 "content_json_string":"{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Bits\"}]}]}"}},
 			{"id":"174191584","type":"post","attributes":{"title":"Transcript","post_type":"image_file",
 			 "published_at":"2026-10-30T10:00:00.000+00:00","current_user_can_view":true}},
 			{"id":"173759134","type":"post","attributes":{"title":"Higher tier","post_type":"podcast",
@@ -150,7 +151,7 @@ func TestPatreonBuilder_Collection(t *testing.T) {
 
 	ep := result.Episodes[0]
 	assert.Equal(t, "174464677", ep.ID)
-	assert.Equal(t, "Bits", ep.Description)
+	assert.Equal(t, "Bits\n\nPatreon post: https://www.patreon.com/posts/amt423-174464677", ep.Description)
 	assert.Equal(t, int64(360), ep.Duration)
 	assert.Equal(t, int64(360*patreonAudioBytesPerSecond), ep.Size)
 	assert.Equal(t, "https://www.patreon.com/posts/amt423-174464677", ep.VideoURL)
@@ -159,6 +160,7 @@ func TestPatreonBuilder_Collection(t *testing.T) {
 
 	assert.Equal(t, "173759134", result.Episodes[1].ID)
 	assert.True(t, result.Episodes[1].Unavailable, "locked posts are reported, not dropped")
+	assert.Equal(t, "Patreon post: https://www.patreon.com/posts/higher-173759134", result.Episodes[1].Description)
 }
 
 func TestPatreonBuilder_Campaign(t *testing.T) {

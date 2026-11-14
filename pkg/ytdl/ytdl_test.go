@@ -1,7 +1,11 @@
 package ytdl
 
 import (
+	"errors"
 	"testing"
+
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 
 	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
@@ -19,6 +23,7 @@ func TestBuildArgs(t *testing.T) {
 		output       string
 		videoURL     string
 		ytdlArgs     []string
+		cookiesFile  string
 		expect       []string
 	}{
 		{
@@ -111,6 +116,16 @@ func TestBuildArgs(t *testing.T) {
 			videoURL:     "http://url1",
 			expect:       []string{"--audio-format", "m4a", "--format", "bestaudio[ext=m4a]", "--output", "/tmp/2", "http://url1"},
 		},
+		{
+			name:        "Cookies file before extra args",
+			format:      model.FormatAudio,
+			quality:     model.QualityHigh,
+			output:      "/tmp/3",
+			videoURL:    "http://url2",
+			cookiesFile: "/data/cookies.txt",
+			ytdlArgs:    []string{"--no-mtime"},
+			expect:      []string{"--extract-audio", "--audio-format", "mp3", "--format", "bestaudio/best", "--cookies", "/data/cookies.txt", "--no-mtime", "--output", "/tmp/3", "http://url2"},
+		},
 	}
 
 	for _, tst := range tests {
@@ -121,6 +136,7 @@ func TestBuildArgs(t *testing.T) {
 				CustomFormat:  tst.customFormat,
 				MaxHeight:     tst.maxHeight,
 				YouTubeDLArgs: tst.ytdlArgs,
+				CookiesFile:   tst.cookiesFile,
 			}, &model.Episode{
 				VideoURL: tst.videoURL,
 			}, tst.output)
@@ -128,4 +144,52 @@ func TestBuildArgs(t *testing.T) {
 			assert.EqualValues(t, tst.expect, result)
 		})
 	}
+}
+
+func TestClassifyOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		expect error
+	}{
+		{"unknown", "ERROR: something else broke", nil},
+		{"too many requests", "ERROR: unable to download video data: HTTP Error 429: Too Many Requests", ErrTooManyRequests},
+		{"upcoming live", "ERROR: [youtube] oPPg6POS6D8: This live event will begin in 25 hours.", ErrNotYetAvailable},
+		{"premiere", "ERROR: [youtube] abc: Premieres in 3 hours", ErrNotYetAvailable},
+		{"patreon locked", "WARNING: [patreon] 174306894: You do not have access to this post\nERROR: [patreon] 174306894: No video formats found!", ErrAccessDenied},
+	}
+
+	for _, tst := range tests {
+		t.Run(tst.name, func(t *testing.T) {
+			assert.Equal(t, tst.expect, classifyOutput(tst.output))
+		})
+	}
+}
+
+func TestDownloadError(t *testing.T) {
+	hook := logtest.NewGlobal()
+	defer hook.Reset()
+
+	t.Run("upcoming stream is not logged as an error", func(t *testing.T) {
+		hook.Reset()
+		err := downloadError("/tmp/x", "ERROR: [youtube] abc: This live event will begin in 25 hours.", errors.New("exit status 1"))
+		assert.Equal(t, ErrNotYetAvailable, err)
+		for _, entry := range hook.AllEntries() {
+			assert.NotEqual(t, log.ErrorLevel, entry.Level, entry.Message)
+		}
+	})
+
+	t.Run("access denied keeps youtube-dl output", func(t *testing.T) {
+		hook.Reset()
+		err := downloadError("/tmp/x", "WARNING: [patreon] 1: You do not have access to this post\n", errors.New("exit status 1"))
+		assert.ErrorIs(t, err, ErrAccessDenied)
+		assert.Contains(t, err.Error(), "You do not have access to this post")
+		assert.Equal(t, log.ErrorLevel, hook.LastEntry().Level)
+	})
+
+	t.Run("unknown failure returns output", func(t *testing.T) {
+		hook.Reset()
+		err := downloadError("/tmp/x", "ERROR: boom", errors.New("exit status 1"))
+		assert.EqualError(t, err, "ERROR: boom")
+	})
 }

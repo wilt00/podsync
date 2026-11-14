@@ -38,6 +38,8 @@ type Config struct {
 	Custom Custom `toml:"custom"`
 	// List of additional youtube-dl arguments passed at download time
 	YouTubeDLArgs []string `toml:"youtube_dl_args"`
+	// CookiesFile is a Netscape cookies.txt; youtube-dl rewrites it after every run, so it must be writable
+	CookiesFile string `toml:"cookies_file"`
 	// Post episode download hooks - executed after each episode is successfully downloaded
 	// Multiple hooks can be configured and will execute in sequence
 	// Example:

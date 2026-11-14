@@ -46,7 +46,59 @@ type PlaylistMetadata struct {
 
 var (
 	ErrTooManyRequests = errors.New(http.StatusText(http.StatusTooManyRequests))
+	ErrNotYetAvailable = errors.New("media is not available yet")
+	ErrAccessDenied    = errors.New("access to media denied")
 )
+
+var notYetAvailableMarkers = []string{
+	"This live event will begin in",
+	"Premieres in",
+}
+
+var accessDeniedMarkers = []string{
+	"You do not have access to this post",
+}
+
+func classifyOutput(output string) error {
+	// YouTube might block host with HTTP Error 429: Too Many Requests
+	if strings.Contains(output, "HTTP Error 429") {
+		return ErrTooManyRequests
+	}
+
+	for _, marker := range notYetAvailableMarkers {
+		if strings.Contains(output, marker) {
+			return ErrNotYetAvailable
+		}
+	}
+
+	for _, marker := range accessDeniedMarkers {
+		if strings.Contains(output, marker) {
+			return ErrAccessDenied
+		}
+	}
+
+	return nil
+}
+
+func downloadError(filePath, output string, err error) error {
+	known := classifyOutput(output)
+	if known == ErrNotYetAvailable {
+		log.Debug(output)
+		return known
+	}
+
+	log.WithError(err).Errorf("youtube-dl error: %s", filePath)
+	log.Error(output)
+
+	switch known {
+	case nil:
+		return errors.New(output)
+	case ErrAccessDenied:
+		return errors.Wrap(known, strings.TrimSpace(output))
+	default:
+		return known
+	}
+}
 
 // Config is a youtube-dl related configuration
 type Config struct {
@@ -231,16 +283,7 @@ func (dl *YoutubeDl) Download(ctx context.Context, feedConfig *feed.Config, epis
 
 	output, err := dl.exec(ctx, args...)
 	if err != nil {
-		log.WithError(err).Errorf("youtube-dl error: %s", filePath)
-
-		// YouTube might block host with HTTP Error 429: Too Many Requests
-		if strings.Contains(output, "HTTP Error 429") {
-			return nil, ErrTooManyRequests
-		}
-
-		log.Error(output)
-
-		return nil, errors.New(output)
+		return nil, downloadError(filePath, output, err)
 	}
 
 	// filePath now with the final extension
@@ -295,6 +338,10 @@ func buildArgs(feedConfig *feed.Config, episode *model.Episode, outputFilePath s
 
 	default:
 		args = append(args, "--audio-format", feedConfig.CustomFormat.Extension, "--format", feedConfig.CustomFormat.YouTubeDLFormat)
+	}
+
+	if feedConfig.CookiesFile != "" {
+		args = append(args, "--cookies", feedConfig.CookiesFile)
 	}
 
 	// Insert additional per-feed youtube-dl arguments

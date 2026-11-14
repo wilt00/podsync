@@ -513,3 +513,23 @@ func setup(t *testing.T, file string) string {
 
 	return f.Name()
 }
+
+func TestValidateCookiesFile(t *testing.T) {
+	dir := t.TempDir()
+
+	writable := filepath.Join(dir, "cookies.txt")
+	require.NoError(t, os.WriteFile(writable, []byte("# Netscape HTTP Cookie File\n"), 0o600))
+	assert.NoError(t, validateCookiesFile(writable))
+
+	assert.Error(t, validateCookiesFile(filepath.Join(dir, "missing.txt")))
+	assert.Error(t, validateCookiesFile(dir))
+
+	if os.Geteuid() == 0 {
+		t.Skip("root can write read-only files")
+	}
+
+	readOnly := filepath.Join(dir, "read-only.txt")
+	require.NoError(t, os.WriteFile(readOnly, []byte("# Netscape HTTP Cookie File\n"), 0o400))
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o600) })
+	assert.ErrorContains(t, validateCookiesFile(readOnly), "writable")
+}

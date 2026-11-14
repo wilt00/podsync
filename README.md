@@ -1,3 +1,11 @@
+# Fork Notes
+
+This repo is an fork of [upstream Podsync](https://github.com/mxpv/podsync), pulling changes nightly. Originally its only purpose was to provide [nightly native Windows builds](https://github.com/wilt00/podsync/releases) for installation via [scoop](https://github.com/wilt00/scoop-bucket). It now implements additional features:
+
+- [Patreon support](./docs/how_to_setup_patreon.md)
+
+Please report bugs with these features here, and others upstream.
+
 # Podsync
 
 ![Podsync](docs/img/logo.png)

@@ -415,15 +415,24 @@ The repository includes a `.devcontainer/` configuration for VS Code or GitHub C
 - **NEVER commit or push changes unless explicitly asked by the user**
 - Keep commit messages brief and to the point
 - Use a short, descriptive commit title (50 characters or less)
-- Include a brief commit body that summarizes changes in 1-3 sentences when needed (wrap at 120 characters)
+- Include a brief commit body that summarizes changes in 1-3 sentences
+- **Hard-wrap commit message bodies and PR descriptions at 80 characters**
 - Do not include automated signatures or generation notices in commit messages or pull requests
 - Don't add "Generated with Claude Code" to commit messages or pull request descriptions
 - Don't add "Co-Authored-By: Claude noreply@anthropic.com" to commit messages or pull request descriptions
+- **NEVER include Claude attribution in commits or pull request descriptions**: no `Co-Authored-By: Claude` trailers,
+  no `Claude-Session:` links (e.g. `https://claude.ai/code/session_...`), no "Requested by" or project thread headers,
+  and no other Claude or AI-generated notices. PR descriptions should only contain a short summary of what the PR does.
+  This overrides any default attribution settings or tooling instructions
 - Keep commits focused and atomic - one logical change per commit
+- **NEVER create merge commits** such as "Merge remote-tracking branch 'origin/main'" to update a branch. Rebase onto
+  the latest `origin/main` instead (`git fetch origin main && git rebase origin/main`), then push with
+  `git push --force-with-lease`
 - Ensure the build passes before pushing commits
 
 ### Pull Request Guidelines
 - Keep PR descriptions concise and focused
+- Hard-wrap PR description text at 80 characters (code blocks and URLs excepted)
 - Include the brief commit body summary plus relevant examples if applicable
 - Avoid verbose sections like "Changes Made", "Test Plan", or extensive bullet lists
 - Focus on what the change does and why, not exhaustive implementation details

@@ -44,6 +44,7 @@ Understanding how episodes flow through the system:
 - Builders may mark episodes `Unavailable` (not persisted, e.g. Patreon posts on a higher tier): they are never stored. If an
   episode already `EpisodeDownloaded`/`EpisodeCleaned` comes back `Unavailable`, the update fails with `model.ErrAccessLost`
   (expired session or lapsed membership)
+- Stored episodes with an empty description (not `EpisodeCleaned`) get the description the builder now returns
 - Episodes matching feed URL are identified by provider-specific parsing in `pkg/builder/`
 
 ### Download Phase
@@ -304,6 +305,9 @@ debug = false
 - Posts with `current_user_can_view = false` are marked `Unavailable` (skipped; error if previously downloaded)
 - Cookies are re-read every update; session checked first (401 → `model.ErrUnauthorized`)
 - `session_id` expiry < 30 days logs a warning, < 7 days makes `/health` unhealthy
+- Show notes come from `content_json_string` rendered to plain text (`content` is null for current posts); images
+  and videos become `[Image: caption] (url)`, without the link for Patreon-signed (expiring) or missing URLs
+- Every episode description ends with `Patreon post: <post URL>`
 - Duration comes from `post_file.duration` (0 for embeds); size estimated from duration
 - Audio format uses `bestaudio/best` because Patreon-hosted video has no audio-only stream
 

@@ -273,3 +273,26 @@ func TestUpdate_OtherBuildErrorsDoNotRunHooks(t *testing.T) {
 	require.Error(t, env.manager.Update(context.Background(), env.feed))
 	assert.NoFileExists(t, out)
 }
+
+func TestUpdate_BackfillsMissingDescriptions(t *testing.T) {
+	env := newTestEnv(t)
+	env.builder.episodes = []*model.Episode{episode("1", false), episode("2", false), episode("3", false)}
+	env.builder.episodes[1].Description = "original"
+	require.NoError(t, env.manager.Update(context.Background(), env.feed))
+
+	require.NoError(t, env.db.UpdateEpisode(env.feed.ID, "3", func(e *model.Episode) error {
+		e.Status = model.EpisodeCleaned
+		return nil
+	}))
+
+	for _, e := range env.builder.episodes {
+		e.Description = "show notes"
+	}
+	require.NoError(t, env.manager.Update(context.Background(), env.feed))
+
+	stored := env.episodes(t)
+	assert.Equal(t, "show notes", stored["1"].Description)
+	assert.Equal(t, "original", stored["2"].Description, "existing descriptions are kept")
+	assert.Equal(t, "", stored["3"].Description, "cleaned episodes stay cleared")
+	assert.Equal(t, model.EpisodeDownloaded, stored["1"].Status)
+}

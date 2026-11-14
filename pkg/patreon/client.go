@@ -73,6 +73,7 @@ type Post struct {
 	ID          string
 	Title       string
 	ContentHTML string
+	ContentText string
 	TeaserText  string
 	URL         string
 	PostType    string
@@ -175,7 +176,7 @@ func (c *Client) ListPosts(ctx context.Context, campaignID, collectionID string,
 		"filter[is_draft]":                 {"false"},
 		"sort":                             {"-published_at"},
 		"page[count]":                      {strconv.Itoa(limit)},
-		"fields[post]":                     {"title,content,teaser_text,url,post_type,published_at,current_user_can_view,post_file,image"},
+		"fields[post]":                     {"title,content,teaser_text,url,post_type,published_at,current_user_can_view,post_file,image,content_json_string"},
 	}
 
 	if collectionID != "" {
@@ -340,6 +341,7 @@ type collectionAttributes struct {
 type postAttributes struct {
 	Title       string  `json:"title"`
 	Content     *string `json:"content"`
+	ContentJSON *string `json:"content_json_string"`
 	TeaserText  *string `json:"teaser_text"`
 	URL         string  `json:"url"`
 	PostType    string  `json:"post_type"`
@@ -385,6 +387,9 @@ func toPost(r resource[postAttributes]) *Post {
 	}
 	if post.URL == "" {
 		post.URL = fmt.Sprintf("https://www.patreon.com/posts/%s", r.ID)
+	}
+	if attrs.ContentJSON != nil {
+		post.ContentText = renderContentJSON(*attrs.ContentJSON)
 	}
 
 	return post

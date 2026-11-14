@@ -163,7 +163,11 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 
 	var lost []string
 	episodeSet := make(map[string]struct{})
+	missingDescription := make(map[string]struct{})
 	if err := u.db.WalkEpisodes(ctx, feedConfig.ID, func(episode *model.Episode) error {
+		if episode.Description == "" && episode.Status != model.EpisodeCleaned {
+			missingDescription[episode.ID] = struct{}{}
+		}
 		if episode.Status != model.EpisodeDownloaded && episode.Status != model.EpisodeCleaned {
 			episodeSet[episode.ID] = struct{}{}
 		} else if _, ok := unavailable[episode.ID]; ok {
@@ -189,6 +193,16 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 
 	for _, episode := range result.Episodes {
 		delete(episodeSet, episode.ID)
+
+		if _, ok := missingDescription[episode.ID]; ok && episode.Description != "" {
+			description := episode.Description
+			if err := u.db.UpdateEpisode(feedConfig.ID, episode.ID, func(stored *model.Episode) error {
+				stored.Description = description
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
 	}
 
 	// removing episodes that are no longer available in the feed and not downloaded or cleaned

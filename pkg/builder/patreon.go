@@ -181,10 +181,8 @@ func (p *PatreonBuilder) episode(post *patreon.Post, _feed *model.Feed) *model.E
 		bytesPerSecond = patreonAudioBytesPerSecond
 	}
 
-	description := stripHTML(post.ContentHTML)
-	if description == "" {
-		description = post.TeaserText
-	}
+	description := firstNonEmpty(post.ContentText, stripHTML(post.ContentHTML), post.TeaserText)
+	description = strings.TrimSpace(description + "\n\nPatreon post: " + post.URL)
 
 	return &model.Episode{
 		ID:          post.ID,

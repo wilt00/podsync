@@ -44,6 +44,7 @@ Understanding how episodes flow through the system:
 - Builders may mark episodes `Unavailable` (not persisted, e.g. Patreon posts on a higher tier): they are never stored. If an
   episode already `EpisodeDownloaded`/`EpisodeCleaned` comes back `Unavailable`, the update fails with `model.ErrAccessLost`
   (expired session or lapsed membership)
+- Stored episodes with an empty description (not `EpisodeCleaned`) get the description the builder now returns
 - Episodes matching feed URL are identified by provider-specific parsing in `pkg/builder/`
 
 ### Download Phase

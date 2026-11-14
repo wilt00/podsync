@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Podsync is a Go-based service that converts YouTube, Vimeo, SoundCloud, and Twitch channels into podcast feeds. It downloads video/audio content and generates RSS feeds that can be consumed by podcast clients.
+Podsync is a Go-based service that converts YouTube, Vimeo, SoundCloud, Twitch, and Patreon channels into podcast feeds. It downloads video/audio content and generates RSS feeds that can be consumed by podcast clients.
 
 ## Key Architecture Components
 
@@ -13,12 +13,13 @@ Podsync is a Go-based service that converts YouTube, Vimeo, SoundCloud, and Twit
 - **config.go**: TOML configuration loading and validation with defaults
 
 ### Core Packages (`pkg/`)
-- **builder/**: Media downloaders for different platforms (YouTube, Vimeo, SoundCloud, Twitch)
+- **builder/**: Media downloaders for different platforms (YouTube, Vimeo, SoundCloud, Twitch, Patreon)
 - **feed/**: RSS/podcast feed generation and management, OPML export, hooks, API key rotation
 - **db/**: BadgerDB-based storage for metadata and state
 - **fs/**: Storage abstraction supporting local filesystem and S3-compatible storage
 - **model/**: Core data structures and domain models
 - **ytdl/**: YouTube-dl wrapper for media downloading
+- **patreon/**: Minimal client for the patreon.com web JSON API (session-cookie auth, cookies.txt parsing)
 
 ### Services (`services/`)
 - **update/**: Feed update orchestration, scheduling, episode filtering via matcher.go
@@ -37,9 +38,12 @@ Podsync is a Go-based service that converts YouTube, Vimeo, SoundCloud, and Twit
 Understanding how episodes flow through the system:
 
 ### Discovery Phase
-- Episodes are discovered during feed updates via platform APIs (YouTube Data API v3, Vimeo API, SoundCloud, Twitch)
+- Episodes are discovered during feed updates via platform APIs (YouTube Data API v3, Vimeo API, SoundCloud, Twitch, Patreon web API)
 - `updateFeed()` in `services/update/updater.go:99-154` queries the platform API
 - New episodes are stored in BadgerDB with status `EpisodeNew`
+- Builders may mark episodes `Unavailable` (not persisted, e.g. Patreon posts on a higher tier): they are never stored. If an
+  episode already `EpisodeDownloaded`/`EpisodeCleaned` comes back `Unavailable`, the update fails with `model.ErrAccessLost`
+  (expired session or lapsed membership)
 - Episodes matching feed URL are identified by provider-specific parsing in `pkg/builder/`
 
 ### Download Phase
@@ -49,6 +53,7 @@ Understanding how episodes flow through the system:
 - Downloads happen to temp directory first, then copied to storage to prevent incomplete files
 - On success: status set to `EpisodeDownloaded` with file size recorded
 - On failure: status set to `EpisodeError`, retry attempted next cycle
+- Upcoming/ongoing live streams (`ytdl.ErrNotYetAvailable`) are not failures: status stays as is, no hooks, retried next cycle
 
 ### Cleanup Phase (Important!)
 - `cleanup()` in `updater.go:373-441` runs AFTER each successful update cycle
@@ -108,6 +113,7 @@ filename_template = "{{id}}"           # Tokens: {{id}}, {{title}}, {{pub_date}}
 opml = true                            # Include in OPML export
 private_feed = false                   # Don't index by podcast aggregators
 youtube_dl_args = ["--arg1", "val"]    # Additional youtube-dl arguments
+cookies_file = "/path/to/cookies.txt"   # Netscape cookies, passed as --cookies; must be writable (Patreon auth)
 
 [feeds.my_feed.custom_format]          # When format = "custom"
 youtube_dl_format = "bestvideo+bestaudio"
@@ -189,6 +195,9 @@ command = ["logger", "Failed: ${ERROR_MESSAGE}"]
 timeout = 60
 ```
 Environment variables available: `EPISODE_FILE`, `FEED_NAME`, `EPISODE_TITLE`, `ERROR_MESSAGE`
+
+`on_episode_download_error` also runs (with an empty `EPISODE_TITLE`) when a feed update fails with
+`model.ErrUnauthorized` or `model.ErrAccessLost` (e.g. expired Patreon cookies).
 
 ### Server Configuration
 ```toml
@@ -284,6 +293,20 @@ debug = false
 - Requires `CLIENT_ID:CLIENT_SECRET` token format
 - Max 100 videos per request
 
+### Patreon (`pkg/builder/patreon.go`, `pkg/patreon/`)
+- **Supported**: Creator pages (`patreon.com/<creator>`, `/c/<creator>`, `/cw/<creator>`, `/<creator>/posts`, where `<creator>` is the page name after `patreon.com/`) and
+  collections (`patreon.com/collection/<id>`, one feed per collection, like YouTube playlists)
+- **Not Supported**: Single posts, `/<creator>/collections` listing pages
+- No API key; members-only posts need `cookies_file` (Netscape cookies.txt with a `session_id` cookie)
+- Listing uses the patreon.com web JSON API directly (`/api/current_user`, `/api/campaigns`, `/api/collection/<id>`,
+  `/api/posts`), downloads go through yt-dlp with `--cookies` (yt-dlp has no collection support)
+- Only media post types are included: `podcast`, `audio_file`, `audio_embed`, `video_external_file`, `video_embed`
+- Posts with `current_user_can_view = false` are marked `Unavailable` (skipped; error if previously downloaded)
+- Cookies are re-read every update; session checked first (401 → `model.ErrUnauthorized`)
+- `session_id` expiry < 30 days logs a warning, < 7 days makes `/health` unhealthy
+- Duration comes from `post_file.duration` (0 for embeds); size estimated from duration
+- Audio format uses `bestaudio/best` because Patreon-hosted video has no audio-only stream
+
 ### API Key Rotation
 - All platforms support multiple keys for rotation
 - Round-robin rotation via `RotatedKeyProvider` in `pkg/feed/key.go`
@@ -295,7 +318,8 @@ debug = false
 - `/{path}/{feed_id}/{episode_name}` - Episode file download
 - `/{path}/podsync.opml` - OPML export (feeds with `opml = true`)
 - `/{path}/index.html` - Web UI (if enabled, local storage only)
-- `/health` - Health check (returns 503 if episodes failed in last 24h)
+- `/health` - Health check (returns 503 if episodes failed in last 24h, or a feed's last update failed or has a warning such as
+  expiring cookies; per-feed details under `feeds`)
 - `/debug/vars` - Runtime metrics (if `debug_endpoints = true`)
 - `/robots.txt` - Search engine blocking (if `no_index = true`)
 
@@ -324,6 +348,9 @@ debug = false
 - API failures: logged, scheduler continues with other feeds
 - Download timeout: configurable via `downloader.timeout` (default 15 minutes)
 - Hooks available for error notification (`on_episode_download_error`)
+- Feed update errors and warnings are tracked in memory by `update.Manager.FeedHealth()` and reported by `/health`
+- Upcoming live streams: deferred, not failed (`ytdl.ErrNotYetAvailable`)
+- Members-only access denied by yt-dlp: `ytdl.ErrAccessDenied`, episode fails and feed health gets a warning
 
 ## Limitations and Known Issues
 
@@ -337,6 +364,8 @@ debug = false
 - YouTube: Live/Premiered videos skipped automatically
 - SoundCloud: Only playlist URLs supported
 - Twitch: Archives only, no clips/highlights
+- Patreon: relies on an undocumented web API and browser session cookies (manual re-export about yearly); episode dates
+  are Patreon publish dates, not original air dates
 
 ### Storage
 - S3: Cannot serve files through Podsync, no filename migration
@@ -496,6 +525,8 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - Vimeo builder: `pkg/builder/vimeo.go`
 - SoundCloud builder: `pkg/builder/soundcloud.go`
 - Twitch builder: `pkg/builder/twitch.go`
+- Patreon builder: `pkg/builder/patreon.go`, API client: `pkg/patreon/client.go`, cookies: `pkg/patreon/cookies.go`
+- Feed health tracking: `services/update/health.go`
 - URL parsing: `pkg/builder/url.go`
 - youtube-dl wrapper: `pkg/ytdl/ytdl.go`
 - Hooks: `pkg/feed/hooks.go`

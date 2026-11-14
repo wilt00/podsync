@@ -115,6 +115,11 @@ vimeo = [ # Multiple keys will be rotated.
   # unexpected behaviour. You should only use this if you know what you are doing, and have read up on youtube-dl's options!
   youtube_dl_args = ["--write-sub", "--embed-subs", "--sub-lang", "en,en-US,en-GB"]
 
+  # Optional Netscape-format cookies.txt passed to youtube-dl as --cookies.
+  # Required for Patreon members-only posts (see docs/how_to_setup_patreon.md).
+  # youtube-dl rewrites this file after each run, so it must be writable.
+  # cookies_file = "/path/to/cookies.txt"
+
   # Optional filename template for downloaded media and RSS enclosure links (without extension).
   # Supported tokens: {{id}}, {{title}}, {{pub_date}}, {{feed_id}}
   # Example output: 2026-02-08_My_Video_Title_dQw4w9WgXcQ.mp4
@@ -139,6 +144,7 @@ vimeo = [ # Multiple keys will be rotated.
 
   # Optional episode download error hooks
   # Execute commands when an episode download fails (e.g. to notify on cookie expiry)
+  # Also executed (with an empty EPISODE_TITLE) when a feed loses its login, e.g. expired Patreon cookies
   # Available environment variables: FEED_NAME, EPISODE_TITLE, ERROR_MESSAGE
 
   # Webhook notification example

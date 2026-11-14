@@ -19,6 +19,7 @@ any device in podcast client.
 ## ✨ Features
 
 - Works with YouTube and Vimeo.
+- Works with Patreon creator pages and collections (members-only posts via your session cookies).
 - Supports feeds configuration: video/audio, high/low quality, max video height, etc.
 - mp3 encoding
 - Update scheduler supports cron expressions
@@ -47,6 +48,7 @@ brew install yt-dlp ffmpeg go
 
 - [How to get Vimeo API token](./docs/how_to_get_vimeo_token.md)
 - [How to get YouTube API Key](./docs/how_to_get_youtube_api_key.md)
+- [How to set up Patreon feeds](./docs/how_to_setup_patreon.md)
 - [Podsync on QNAP NAS Guide](./docs/how_to_setup_podsync_on_qnap_nas.md)
 - [Schedule updates with cron](./docs/cron.md)
 

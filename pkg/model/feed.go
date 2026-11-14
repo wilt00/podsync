@@ -31,17 +31,18 @@ const (
 
 type Episode struct {
 	// ID of episode
-	ID          string        `json:"id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	Thumbnail   string        `json:"thumbnail"`
-	Duration    int64         `json:"duration"`
-	VideoURL    string        `json:"video_url"`
-	PubDate     time.Time     `json:"pub_date"`
-	Size        int64         `json:"size"`
-	Order       string        `json:"order"`
-	Status      EpisodeStatus `json:"status"` // Disk status
-	Unavailable bool          `json:"-"`
+	ID            string        `json:"id"`
+	Title         string        `json:"title"`
+	Description   string        `json:"description"`
+	Thumbnail     string        `json:"thumbnail"`
+	ThumbnailFile string        `json:"thumbnail_file,omitempty"`
+	Duration      int64         `json:"duration"`
+	VideoURL      string        `json:"video_url"`
+	PubDate       time.Time     `json:"pub_date"`
+	Size          int64         `json:"size"`
+	Order         string        `json:"order"`
+	Status        EpisodeStatus `json:"status"` // Disk status
+	Unavailable   bool          `json:"-"`
 }
 
 type Feed struct {
@@ -57,6 +58,7 @@ type Feed struct {
 	CoverArtQuality Quality    `json:"cover_art_quality"`
 	PageSize        int        `json:"page_size"`
 	CoverArt        string     `json:"cover_art"`
+	CoverArtFile    string     `json:"cover_art_file,omitempty"`
 	Title           string     `json:"title"`
 	Description     string     `json:"description"`
 	PubDate         time.Time  `json:"pub_date"`

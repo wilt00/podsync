@@ -22,6 +22,11 @@ func RequiresKey(provider model.Provider) bool {
 	}
 }
 
+// MirrorsArtwork reports whether a provider's artwork URLs expire, so podsync must serve its own copies.
+func MirrorsArtwork(provider model.Provider) bool {
+	return provider == model.ProviderPatreon
+}
+
 func New(ctx context.Context, provider model.Provider, key string, downloader Downloader) (Builder, error) {
 	switch provider {
 	case model.ProviderYoutube:

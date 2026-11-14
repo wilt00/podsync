@@ -100,9 +100,12 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 		}
 	}
 
-	if cfg.Custom.CoverArt != "" {
+	switch {
+	case cfg.Custom.CoverArt != "":
 		p.AddImage(cfg.Custom.CoverArt)
-	} else {
+	case feed.CoverArtFile != "":
+		p.AddImage(storageURL(hostname, cfg.ID, feed.CoverArtFile))
+	default:
 		p.AddImage(feed.CoverArt)
 	}
 
@@ -149,7 +152,11 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 
 		item.AddPubDate(&episode.PubDate)
 		item.AddSummary(episode.Description)
-		item.AddImage(episode.Thumbnail)
+		if episode.ThumbnailFile != "" {
+			item.AddImage(storageURL(hostname, cfg.ID, episode.ThumbnailFile))
+		} else {
+			item.AddImage(episode.Thumbnail)
+		}
 		item.AddDuration(episode.Duration)
 
 		enclosureType := itunes.MP4
@@ -162,7 +169,7 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 
 		var (
 			episodeName = EpisodeName(cfg, episode)
-			downloadURL = fmt.Sprintf("%s/%s/%s", strings.TrimRight(hostname, "/"), cfg.ID, episodeName)
+			downloadURL = storageURL(hostname, cfg.ID, episodeName)
 		)
 
 		item.AddEnclosure(downloadURL, enclosureType, episode.Size)
@@ -184,6 +191,10 @@ func Build(_ctx context.Context, feed *model.Feed, cfg *Config, hostname string)
 	}
 
 	return &p, nil
+}
+
+func storageURL(hostname, feedID, name string) string {
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(hostname, "/"), feedID, name)
 }
 
 func EpisodeName(feedConfig *Config, episode *model.Episode) string {

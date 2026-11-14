@@ -13,6 +13,15 @@ type Builder interface {
 	Build(ctx context.Context, cfg *feed.Config) (*model.Feed, error)
 }
 
+func RequiresKey(provider model.Provider) bool {
+	switch provider {
+	case model.ProviderSoundcloud, model.ProviderPatreon:
+		return false
+	default:
+		return true
+	}
+}
+
 func New(ctx context.Context, provider model.Provider, key string, downloader Downloader) (Builder, error) {
 	switch provider {
 	case model.ProviderYoutube:
@@ -23,6 +32,8 @@ func New(ctx context.Context, provider model.Provider, key string, downloader Do
 		return NewSoundcloudBuilder()
 	case model.ProviderTwitch:
 		return NewTwitchBuilder(key)
+	case model.ProviderPatreon:
+		return NewPatreonBuilder()
 	default:
 		return nil, errors.Errorf("unsupported provider %q", provider)
 	}

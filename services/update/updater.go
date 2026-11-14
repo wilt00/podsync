@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
@@ -35,6 +37,11 @@ type Manager struct {
 	fs         fs.Storage
 	feeds      map[string]*feed.Config
 	keys       map[model.Provider]feed.KeyProvider
+
+	newBuilder func(ctx context.Context, provider model.Provider, key string, downloader builder.Downloader) (builder.Builder, error)
+
+	healthMu sync.RWMutex
+	health   map[string]feed.Health
 }
 
 func NewUpdater(
@@ -52,6 +59,7 @@ func NewUpdater(
 		fs:         fs,
 		feeds:      feeds,
 		keys:       keys,
+		newBuilder: builder.New,
 	}, nil
 }
 
@@ -62,20 +70,38 @@ func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) error {
 		"quality": feedConfig.Quality,
 	}).Infof("-> updating %s", feedConfig.URL)
 
+	warning := credentialsWarning(feedConfig, time.Now())
+
+	denied, err := u.update(ctx, feedConfig)
+	if err == nil && denied > 0 {
+		warning = strings.TrimSpace(fmt.Sprintf("%s %d download(s) were denied access, check cookies_file %s",
+			warning, denied, feedConfig.CookiesFile))
+	}
+
+	if errors.Is(err, model.ErrUnauthorized) || errors.Is(err, model.ErrAccessLost) {
+		runErrorHooks(feedConfig, "", err)
+	}
+
+	u.recordHealth(feedConfig.ID, err, warning)
+	return err
+}
+
+func (u *Manager) update(ctx context.Context, feedConfig *feed.Config) (denied int, err error) {
 	started := time.Now()
 
 	if err := u.updateFeed(ctx, feedConfig); err != nil {
-		return errors.Wrap(err, "update failed")
+		return 0, errors.Wrap(err, "update failed")
 	}
 
 	// Fetch episodes for download
 	episodesToDownload, err := u.fetchEpisodes(ctx, feedConfig)
 	if err != nil {
-		return errors.Wrap(err, "fetch episodes failed")
+		return 0, errors.Wrap(err, "fetch episodes failed")
 	}
 
-	if err := u.downloadEpisodes(ctx, feedConfig, episodesToDownload); err != nil {
-		return errors.Wrap(err, "download failed")
+	denied, err = u.downloadEpisodes(ctx, feedConfig, episodesToDownload)
+	if err != nil {
+		return denied, errors.Wrap(err, "download failed")
 	}
 
 	if err := u.cleanup(ctx, feedConfig); err != nil {
@@ -83,16 +109,16 @@ func (u *Manager) Update(ctx context.Context, feedConfig *feed.Config) error {
 	}
 
 	if err := u.buildXML(ctx, feedConfig); err != nil {
-		return errors.Wrap(err, "xml build failed")
+		return denied, errors.Wrap(err, "xml build failed")
 	}
 
 	if err := u.buildOPML(ctx); err != nil {
-		return errors.Wrap(err, "opml build failed")
+		return denied, errors.Wrap(err, "opml build failed")
 	}
 
 	elapsed := time.Since(started)
 	log.Infof("successfully updated feed in %s", elapsed)
-	return nil
+	return denied, nil
 }
 
 // updateFeed pulls API for new episodes and saves them to database
@@ -102,13 +128,15 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 		return errors.Wrapf(err, "failed to parse URL: %s", feedConfig.URL)
 	}
 
-	keyProvider, ok := u.keys[info.Provider]
-	if !ok {
+	var key string
+	if keyProvider, ok := u.keys[info.Provider]; ok {
+		key = keyProvider.Get()
+	} else if builder.RequiresKey(info.Provider) {
 		return errors.Errorf("key provider %q not loaded", info.Provider)
 	}
 
 	// Create an updater for this feed type
-	provider, err := builder.New(ctx, info.Provider, keyProvider.Get(), u.downloader)
+	provider, err := u.newBuilder(ctx, info.Provider, key, u.downloader)
 	if err != nil {
 		return err
 	}
@@ -122,14 +150,37 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 
 	log.Debugf("received %d episode(s) for %q", len(result.Episodes), result.Title)
 
+	unavailable := make(map[string]struct{})
+	available := make([]*model.Episode, 0, len(result.Episodes))
+	for _, episode := range result.Episodes {
+		if episode.Unavailable {
+			unavailable[episode.ID] = struct{}{}
+			continue
+		}
+		available = append(available, episode)
+	}
+	result.Episodes = available
+
+	var lost []string
 	episodeSet := make(map[string]struct{})
 	if err := u.db.WalkEpisodes(ctx, feedConfig.ID, func(episode *model.Episode) error {
 		if episode.Status != model.EpisodeDownloaded && episode.Status != model.EpisodeCleaned {
 			episodeSet[episode.ID] = struct{}{}
+		} else if _, ok := unavailable[episode.ID]; ok {
+			lost = append(lost, episode.ID)
 		}
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	// Assumes providers never unpublish posts: losing access to a downloaded one means the session expired
+	// or the membership lapsed.
+	if len(lost) > 0 {
+		sort.Strings(lost)
+		return errors.Wrapf(model.ErrAccessLost,
+			"%d previously downloaded episode(s) are no longer accessible (%s); the session may have expired "+
+				"or the membership lapsed", len(lost), strings.Join(lost, ", "))
 	}
 
 	if err := u.db.AddFeed(ctx, feedConfig.ID, result); err != nil {
@@ -195,10 +246,11 @@ func (u *Manager) fetchEpisodes(ctx context.Context, feedConfig *feed.Config) ([
 	return downloadList, nil
 }
 
-func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config, downloadList []*model.Episode) error {
+func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config, downloadList []*model.Episode) (int, error) {
 	var (
 		downloadCount = len(downloadList)
 		downloaded    = 0
+		denied        = 0
 		feedID        = feedConfig.ID
 	)
 
@@ -206,7 +258,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		log.Infof("download count: %d", downloadCount)
 	} else {
 		log.Info("no episodes to download")
-		return nil
+		return 0, nil
 	}
 
 	// Download pending episodes
@@ -229,7 +281,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 				return nil
 			}); err != nil {
 				logger.WithError(err).Error("failed to update file info")
-				return err
+				return denied, err
 			}
 
 			continue
@@ -237,7 +289,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			// Will download, do nothing here
 		} else {
 			logger.WithError(err).Error("failed to stat file")
-			return err
+			return denied, err
 		}
 
 		// Download episode to disk
@@ -255,28 +307,23 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 				break
 			}
 
-			// Execute episode download error hooks
-			if len(feedConfig.OnEpisodeDownloadError) > 0 {
-				env := []string{
-					"FEED_NAME=" + feedID,
-					"EPISODE_TITLE=" + episode.Title,
-					"ERROR_MESSAGE=" + err.Error(),
-				}
-
-				for i, hook := range feedConfig.OnEpisodeDownloadError {
-					if hookErr := hook.Invoke(env); hookErr != nil {
-						logger.Errorf("failed to execute episode download error hook %d: %v", i+1, hookErr)
-					} else {
-						logger.Infof("episode download error hook %d executed successfully", i+1)
-					}
-				}
+			if errors.Is(err, ytdl.ErrNotYetAvailable) {
+				logger.Infof("episode %q is not available yet (upcoming or live stream), will retry later", episode.ID)
+				continue
 			}
+
+			if errors.Is(err, ytdl.ErrAccessDenied) {
+				denied++
+			}
+
+			// Execute episode download error hooks
+			runErrorHooks(feedConfig, episode.Title, err)
 
 			if err := u.db.UpdateEpisode(feedID, episode.ID, func(episode *model.Episode) error {
 				episode.Status = model.EpisodeError
 				return nil
 			}); err != nil {
-				return err
+				return denied, err
 			}
 
 			continue
@@ -287,7 +334,7 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 		tempFile.Close()
 		if err != nil {
 			logger.WithError(err).Error("failed to copy file")
-			return err
+			return denied, err
 		}
 
 		// Execute post episode download hooks
@@ -315,14 +362,14 @@ func (u *Manager) downloadEpisodes(ctx context.Context, feedConfig *feed.Config,
 			episode.Status = model.EpisodeDownloaded
 			return nil
 		}); err != nil {
-			return err
+			return denied, err
 		}
 
 		downloaded++
 	}
 
 	log.Infof("downloaded %d episode(s)", downloaded)
-	return nil
+	return denied, nil
 }
 
 func (u *Manager) buildXML(ctx context.Context, feedConfig *feed.Config) error {

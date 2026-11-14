@@ -133,9 +133,32 @@ func (c *Config) validate() error {
 				result = multierror.Append(result, errors.Wrapf(err, "invalid custom_format.extension for %q", id))
 			}
 		}
+		if f.CookiesFile != "" {
+			if err := validateCookiesFile(f.CookiesFile); err != nil {
+				result = multierror.Append(result, errors.Wrapf(err, "invalid cookies_file for %q", id))
+			}
+		}
 	}
 
 	return result.ErrorOrNil()
+}
+
+func validateCookiesFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		return errors.Errorf("%s is a directory", path)
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return errors.Wrap(err, "cookies file must be writable (youtube-dl updates it after each run)")
+	}
+
+	return f.Close()
 }
 
 func (c *Config) applyDefaults(configPath string) {

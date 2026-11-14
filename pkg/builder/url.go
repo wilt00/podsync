@@ -69,6 +69,19 @@ func ParseURL(link string) (model.Info, error) {
 		return info, nil
 	}
 
+	if parsed.Host == "patreon.com" || strings.HasSuffix(parsed.Host, ".patreon.com") {
+		kind, id, err := parsePatreonURL(parsed)
+		if err != nil {
+			return model.Info{}, err
+		}
+
+		info.Provider = model.ProviderPatreon
+		info.LinkType = kind
+		info.ItemID = id
+
+		return info, nil
+	}
+
 	return model.Info{}, errors.New("unsupported URL host")
 }
 

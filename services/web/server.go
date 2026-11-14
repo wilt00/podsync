@@ -10,12 +10,22 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/mxpv/podsync/pkg/db"
+	"github.com/mxpv/podsync/pkg/feed"
 	"github.com/mxpv/podsync/pkg/model"
 )
 
+type HealthReporter interface {
+	FeedHealth() map[string]feed.Health
+}
+
 type Server struct {
 	http.Server
-	db db.Storage
+	db     db.Storage
+	health HealthReporter
+}
+
+func (s *Server) SetHealthReporter(reporter HealthReporter) {
+	s.health = reporter
 }
 
 type Config struct {
@@ -101,10 +111,11 @@ func New(cfg Config, storage http.FileSystem, database db.Storage) *Server {
 }
 
 type HealthStatus struct {
-	Status         string    `json:"status"`
-	Timestamp      time.Time `json:"timestamp"`
-	FailedEpisodes int       `json:"failed_episodes,omitempty"`
-	Message        string    `json:"message,omitempty"`
+	Status         string                 `json:"status"`
+	Timestamp      time.Time              `json:"timestamp"`
+	FailedEpisodes int                    `json:"failed_episodes,omitempty"`
+	Feeds          map[string]feed.Health `json:"feeds,omitempty"`
+	Message        string                 `json:"message,omitempty"`
 }
 
 func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -124,10 +135,24 @@ func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	})
 
+	var feedProblems map[string]feed.Health
+	if s.health != nil {
+		for id, h := range s.health.FeedHealth() {
+			if h.Healthy() {
+				continue
+			}
+			if feedProblems == nil {
+				feedProblems = make(map[string]feed.Health)
+			}
+			feedProblems[id] = h
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	status := HealthStatus{
 		Timestamp: time.Now(),
+		Feeds:     feedProblems,
 	}
 
 	if err != nil {
@@ -135,10 +160,11 @@ func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 		status.Status = "unhealthy"
 		status.Message = "database error during health check"
 		w.WriteHeader(http.StatusServiceUnavailable)
-	} else if failedCount > 0 {
+	} else if failedCount > 0 || len(feedProblems) > 0 {
 		status.Status = "unhealthy"
 		status.FailedEpisodes = failedCount
-		status.Message = fmt.Sprintf("found %d failed downloads in the last 24 hours", failedCount)
+		status.Message = fmt.Sprintf("found %d failed downloads in the last 24 hours and %d feed(s) needing attention",
+			failedCount, len(feedProblems))
 		w.WriteHeader(http.StatusServiceUnavailable)
 	} else {
 		status.Status = "healthy"

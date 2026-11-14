@@ -17,11 +17,12 @@ const (
 	ProviderVimeo      = Provider("vimeo")
 	ProviderSoundcloud = Provider("soundcloud")
 	ProviderTwitch     = Provider("twitch")
+	ProviderPatreon    = Provider("patreon")
 )
 
 // Info represents data extracted from URL
 type Info struct {
 	LinkType Type     // Either group, channel or user
-	Provider Provider // Youtube, Vimeo, SoundCloud or Twitch
+	Provider Provider // Youtube, Vimeo, SoundCloud, Twitch or Patreon
 	ItemID   string
 }

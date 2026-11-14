@@ -8,4 +8,6 @@ var (
 	ErrAlreadyExists = errors.New("object already exists")
 	ErrNotFound      = errors.New("not found")
 	ErrQuotaExceeded = errors.New("query limit is exceeded")
+	ErrUnauthorized  = errors.New("provider rejected credentials")
+	ErrAccessLost    = errors.New("access to previously downloaded episodes was lost")
 )

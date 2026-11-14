@@ -24,6 +24,7 @@ import (
 
 type fakeBuilder struct {
 	episodes []*model.Episode
+	coverArt string
 	err      error
 }
 
@@ -43,6 +44,7 @@ func (b *fakeBuilder) Build(_ context.Context, cfg *feed.Config) (*model.Feed, e
 		Title:    "Test feed",
 		Format:   cfg.Format,
 		Provider: model.ProviderPatreon,
+		CoverArt: b.coverArt,
 		Episodes: episodes,
 	}, nil
 }
@@ -71,6 +73,7 @@ type testEnv struct {
 	downloader *fakeDownloader
 	feed       *feed.Config
 	providers  []model.Provider
+	dataDir    string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -80,7 +83,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 
-	storage, err := fs.NewLocal(t.TempDir(), false, false)
+	dataDir := t.TempDir()
+	storage, err := fs.NewLocal(dataDir, false, false)
 	require.NoError(t, err)
 
 	feedConfig := &feed.Config{
@@ -95,6 +99,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		builder:    &fakeBuilder{},
 		downloader: &fakeDownloader{errs: map[string]error{}},
 		feed:       feedConfig,
+		dataDir:    dataDir,
 	}
 
 	manager, err := NewUpdater(map[string]*feed.Config{"amt": feedConfig}, map[model.Provider]feed.KeyProvider{},

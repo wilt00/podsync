@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -35,6 +36,7 @@ type Manager struct {
 	downloader Downloader
 	db         db.Storage
 	fs         fs.Storage
+	http       *http.Client
 	feeds      map[string]*feed.Config
 	keys       map[model.Provider]feed.KeyProvider
 
@@ -57,6 +59,7 @@ func NewUpdater(
 		downloader: downloader,
 		db:         db,
 		fs:         fs,
+		http:       &http.Client{Timeout: 30 * time.Second},
 		feeds:      feeds,
 		keys:       keys,
 		newBuilder: builder.New,
@@ -163,11 +166,9 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 
 	var lost []string
 	episodeSet := make(map[string]struct{})
-	missingDescription := make(map[string]struct{})
+	stored := make(map[string]*model.Episode)
 	if err := u.db.WalkEpisodes(ctx, feedConfig.ID, func(episode *model.Episode) error {
-		if episode.Description == "" && episode.Status != model.EpisodeCleaned {
-			missingDescription[episode.ID] = struct{}{}
-		}
+		stored[episode.ID] = episode
 		if episode.Status != model.EpisodeDownloaded && episode.Status != model.EpisodeCleaned {
 			episodeSet[episode.ID] = struct{}{}
 		} else if _, ok := unavailable[episode.ID]; ok {
@@ -187,6 +188,16 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 				"or the membership lapsed", len(lost), strings.Join(lost, ", "))
 	}
 
+	mirror := builder.MirrorsArtwork(info.Provider)
+
+	var unusedArtwork []string
+	if mirror {
+		if previous, err := u.db.GetFeed(ctx, feedConfig.ID); err == nil {
+			unusedArtwork = append(unusedArtwork, previous.CoverArtFile)
+		}
+		result.CoverArtFile = u.mirrorArtworkOrWarn(ctx, feedConfig.ID, result.CoverArt)
+	}
+
 	if err := u.db.AddFeed(ctx, feedConfig.ID, result); err != nil {
 		return err
 	}
@@ -194,14 +205,35 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 	for _, episode := range result.Episodes {
 		delete(episodeSet, episode.ID)
 
-		if _, ok := missingDescription[episode.ID]; ok && episode.Description != "" {
-			description := episode.Description
-			if err := u.db.UpdateEpisode(feedConfig.ID, episode.ID, func(stored *model.Episode) error {
+		previous, existed := stored[episode.ID]
+		if existed && previous.Status == model.EpisodeCleaned {
+			continue
+		}
+
+		description := ""
+		if existed && previous.Description == "" {
+			description = episode.Description
+		}
+
+		thumbnailFile := ""
+		if mirror && (!existed || previous.ThumbnailFile == "") {
+			thumbnailFile = u.mirrorArtworkOrWarn(ctx, feedConfig.ID, episode.Thumbnail)
+		}
+
+		if description == "" && thumbnailFile == "" {
+			continue
+		}
+
+		if err := u.db.UpdateEpisode(feedConfig.ID, episode.ID, func(stored *model.Episode) error {
+			if description != "" {
 				stored.Description = description
-				return nil
-			}); err != nil {
-				return err
 			}
+			if thumbnailFile != "" {
+				stored.ThumbnailFile = thumbnailFile
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -212,6 +244,11 @@ func (u *Manager) updateFeed(ctx context.Context, feedConfig *feed.Config) error
 		if err != nil {
 			return err
 		}
+		unusedArtwork = append(unusedArtwork, stored[id].ThumbnailFile)
+	}
+
+	if err := u.pruneArtwork(ctx, feedConfig.ID, unusedArtwork); err != nil {
+		log.WithError(err).Warn("failed to delete unused artwork")
 	}
 
 	log.Debug("successfully saved updates to storage")
@@ -437,6 +474,8 @@ func (u *Manager) cleanup(ctx context.Context, feedConfig *feed.Config) error {
 		logger = log.WithField("feed_id", feedID)
 		list   []*model.Episode
 		result *multierror.Error
+
+		unusedArtwork []string
 	)
 
 	if feedConfig.Clean == nil {
@@ -491,11 +530,18 @@ func (u *Manager) cleanup(ctx context.Context, feedConfig *feed.Config) error {
 			episode.Status = model.EpisodeCleaned
 			episode.Title = ""
 			episode.Description = ""
+			episode.ThumbnailFile = ""
 			return nil
 		}); err != nil {
 			result = multierror.Append(result, errors.Wrapf(err, "failed to set state for cleaned episode: %s", episode.ID))
 			continue
 		}
+
+		unusedArtwork = append(unusedArtwork, episode.ThumbnailFile)
+	}
+
+	if err := u.pruneArtwork(ctx, feedID, unusedArtwork); err != nil {
+		result = multierror.Append(result, err)
 	}
 
 	return result.ErrorOrNil()

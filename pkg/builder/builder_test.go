@@ -15,3 +15,8 @@ func TestRequiresKey(t *testing.T) {
 	assert.False(t, RequiresKey(model.ProviderSoundcloud))
 	assert.False(t, RequiresKey(model.ProviderPatreon))
 }
+
+func TestMirrorsArtwork(t *testing.T) {
+	assert.True(t, MirrorsArtwork(model.ProviderPatreon))
+	assert.False(t, MirrorsArtwork(model.ProviderYoutube))
+}

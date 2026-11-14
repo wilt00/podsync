@@ -119,3 +119,29 @@ func TestEpisodeNameWithCustomExtensionNormalization(t *testing.T) {
 	cfg.CustomFormat.Extension = "../bad"
 	assert.Equal(t, "abc123.mp4", EpisodeName(cfg, episode))
 }
+
+func TestBuildXMLMirroredArtwork(t *testing.T) {
+	feed := model.Feed{
+		CoverArt:     "https://cdn.example.com/cover.png?token-time=1",
+		CoverArtFile: "artwork/cover.png",
+		Episodes: []*model.Episode{
+			{ID: "1", Title: "t", Status: model.EpisodeDownloaded, Thumbnail: "https://cdn.example.com/1.jpg?token-time=1", ThumbnailFile: "artwork/1.jpg"},
+			{ID: "2", Title: "t", Status: model.EpisodeDownloaded, Thumbnail: "https://cdn.example.com/2.jpg"},
+		},
+	}
+	cfg := Config{ID: "test"}
+
+	out, err := Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+
+	require.NotNil(t, out.IImage)
+	assert.Equal(t, "http://localhost/test/artwork/cover.png", out.IImage.HREF)
+	require.Len(t, out.Items, 2)
+	assert.Equal(t, "http://localhost/test/artwork/1.jpg", out.Items[0].IImage.HREF)
+	assert.Equal(t, "https://cdn.example.com/2.jpg", out.Items[1].IImage.HREF, "not mirrored yet")
+
+	cfg.Custom.CoverArt = "https://example.com/custom.jpg"
+	out, err = Build(context.Background(), &feed, &cfg, "http://localhost/")
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/custom.jpg", out.IImage.HREF, "custom cover art wins")
+}

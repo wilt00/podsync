@@ -61,6 +61,7 @@ Understanding how episodes flow through the system:
 - **Only triggered if `clean.keep_last` is configured** (global or per-feed)
 - Keeps most recent N episodes by PubDate (descending order)
 - Deleted episodes have status changed to `EpisodeCleaned` and title/description cleared
+- Mirrored artwork no longer used by the feed or any episode is deleted (also when episodes are removed from the database)
 - **Files are deleted from storage but database records are retained**
 - This is a soft-delete: episodes remain in the database forever
 
@@ -308,6 +309,9 @@ debug = false
 - Show notes come from `content_json_string` rendered to plain text (`content` is null for current posts); images
   and videos become `[Image: caption] (url)`, without the link for Patreon-signed (expiring) or missing URLs
 - Every episode description ends with `Patreon post: <post URL>`
+- Image URLs are signed and expire within weeks, so cover art and episode thumbnails are mirrored to
+  `{feed_id}/artwork/<hash>.<ext>` (`builder.MirrorsArtwork`, `services/update/artwork.go`); the hash ignores `token-*`
+  query parameters, so each image is downloaded once. A failed download keeps the remote URL and is retried next update
 - Duration comes from `post_file.duration` (0 for embeds); size estimated from duration
 - Audio format uses `bestaudio/best` because Patreon-hosted video has no audio-only stream
 
@@ -330,7 +334,7 @@ debug = false
 ## Storage Behavior
 
 ### Local Storage
-- Files stored in `{data_dir}/{feed_id}/{episode_name}`
+- Files stored in `{data_dir}/{feed_id}/{episode_name}`; mirrored artwork in `{data_dir}/{feed_id}/artwork/`
 - Web UI served from `./html/index.html` if enabled
 
 ### S3 Storage
@@ -531,6 +535,7 @@ This project uses golangci-lint with strict formatting rules configured in `.gol
 - Twitch builder: `pkg/builder/twitch.go`
 - Patreon builder: `pkg/builder/patreon.go`, API client: `pkg/patreon/client.go`, cookies: `pkg/patreon/cookies.go`
 - Feed health tracking: `services/update/health.go`
+- Artwork mirroring: `services/update/artwork.go`
 - URL parsing: `pkg/builder/url.go`
 - youtube-dl wrapper: `pkg/ytdl/ytdl.go`
 - Hooks: `pkg/feed/hooks.go`
